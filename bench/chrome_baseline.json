@@ -1,0 +1,15 @@
+{
+  "_note": "Claude in Chrome, measured 2026-10-20 via in-batch Date.now() markers (excludes MCP round-trip, favors Chrome). tokens = output chars/4. Images counted ~1500 tok.",
+  "hn_read":      {"secs": 0.96, "tokens": 1100, "items": 29, "ok": "yes"},
+  "hn_snap":      {"secs": 1.03, "tokens": 3300, "items": 24, "ok": "partial (links only, no points/text, cut at ~24 stories)"},
+  "li_read":      {"secs": 2.86, "tokens": 1100, "items": 3,  "ok": "yes"},
+  "li_snap":      {"secs": "-",  "tokens": "-",  "items": "-", "ok": "-"},
+  "rd_read":      {"secs": 0,    "tokens": 30,   "items": 0,  "ok": "no (reddit.com blocked by extension policy)"},
+  "rd_snap":      {"secs": 0,    "tokens": 30,   "items": 0,  "ok": "no (blocked)"},
+  "rd_open_post": {"secs": 0,    "tokens": 30,   "items": 0,  "ok": "no (blocked)"},
+  "x_read":       {"secs": 4.67, "tokens": 150,  "items": 1,  "ok": "no (0 posts first read; get_page_text returns only 1 <article>)"},
+  "x_snap":       {"secs": "-",  "tokens": "-",  "items": "-", "ok": "-"},
+  "x_scroll_more":{"secs": 1.2,  "tokens": 1600, "items": 1,  "ok": "no (scroll returns screenshot; text still 1 post)"},
+  "hn_click":     {"secs": 2.3,  "tokens": 80,   "items": 1,  "ok": "yes (find is LLM-backed 1.2s; click returns before navigation)"},
+  "wiki_search":  {"secs": 2.7,  "tokens": 100,  "items": 0,  "ok": "no (still on Main_Page 4.5s after Enter)"}
+}

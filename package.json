@@ -1,0 +1,36 @@
+{
+  "name": "aria-browser",
+  "version": "2.0.0",
+  "description": "Signed-in headless Chrome for AI agents: compact ARIA snapshots with clickable refs, a persistent daemon, several Chrome profiles at once.",
+  "main": "bin/cli.js",
+  "bin": {
+    "aria": "./bin/cli.js"
+  },
+  "scripts": {
+    "start": "node ./bin/cli.js",
+    "sync": "node ./bin/cli.js",
+    "evals": "python3 bench/evals.py",
+    "bench": "python3 bench/bench.py"
+  },
+  "keywords": [
+    "chrome",
+    "playwright",
+    "aria",
+    "accessibility-tree",
+    "agent",
+    "skill",
+    "headless",
+    "claude-code",
+    "codex",
+    "antigravity"
+  ],
+  "author": "Albert Yu",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/albertyu647/aria-browser"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
