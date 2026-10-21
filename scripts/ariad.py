@@ -32,6 +32,7 @@ from playwright.async_api import async_playwright
 sys.path.insert(0, str(Path(__file__).parent))
 from compact import compact, dominant_prefix  # noqa: E402
 import profiles as profiles_cfg  # noqa: E402
+from devtools import DevtoolsMixin, PERF_INIT_JS  # noqa: E402
 
 STATE_DIR = Path(os.environ.get("ARIA_HOME", Path.home() / ".cache" / "aria-browser"))
 INFO_FILE = STATE_DIR / "ariad.json"
@@ -117,7 +118,6 @@ class Tab:
         self.page = page
         self.profile = profile
         self.console = collections.deque(maxlen=400)
-        self.network = collections.deque(maxlen=600)
         self.last_snap = None
         self.dialogs = collections.deque(maxlen=20)
         self.ref_prefix = ""
@@ -126,7 +126,10 @@ class Tab:
         return (self.ref_prefix + r) if r.startswith("e") else r
 
 
-class Daemon:
+class Daemon(DevtoolsMixin):
+    state_dir = STATE_DIR
+    usage = UsageError
+
     def __init__(self):
         self.pw = None
         self.browser = None
@@ -172,6 +175,7 @@ class Daemon:
         if sp.exists():
             await self.load_cookies(ctx, sp)
         await ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        await ctx.add_init_script(PERF_INIT_JS)
         ctx.on("page", lambda pg, prof=profile: self._register(pg, prof, make_current=True))
         if BLOCK_TYPES:
             async def _route(route):
@@ -192,13 +196,7 @@ class Daemon:
         self.tabs[tab.id] = tab
         page.on("console", lambda m, tab=tab: tab.console.append(f"[{m.type}] {m.text}"[:500]))
         page.on("pageerror", lambda e, tab=tab: tab.console.append(f"[pageerror] {e}"[:500]))
-        page.on(
-            "response",
-            lambda r, tab=tab: tab.network.append(
-                f"{r.status} {r.request.method} {r.request.resource_type} {r.url[:300]}"
-            ),
-        )
-        page.on("requestfailed", lambda r, tab=tab: tab.network.append(f"FAIL {r.request.method if hasattr(r,'request') else r.method} {r.url[:300]} {r.failure}"))
+        self.devtools_attach(tab)  # network, websockets, debugger state (devtools.py)
         page.on("dialog", lambda d, tab=tab: asyncio.ensure_future(self._dialog(tab, d)))
         page.on("close", lambda _p, tab=tab: self._closed(tab))
         if make_current or profile not in self.current:
@@ -544,12 +542,6 @@ class Daemon:
         p.add_argument("--clear", action="store_true")
         p.add_argument("-n", type=int, default=50)
 
-        p = mk("network", "Recent network responses")
-        p.add_argument("--filter", default=None)
-        p.add_argument("--failed", action="store_true", help="only 4xx/5xx/failed")
-        p.add_argument("--clear", action="store_true")
-        p.add_argument("-n", type=int, default=50)
-
         p = mk("fetch", "fetch() from the page with its cookies (API calls as the signed-in user)")
         p.add_argument("url")
         p.add_argument("--method", default="GET")
@@ -557,6 +549,8 @@ class Daemon:
         p.add_argument("--max", type=int, default=None)
         p.add_argument("--offset", type=int, default=0)
         p.add_argument("--filter", default=None)
+
+        self.devtools_parsers(mk, reads)
 
         mk("tabs", "List tabs")
         p = mk("tab", "tab new [url] | tab use <id> | tab close [id]")
@@ -617,9 +611,9 @@ class Daemon:
                 note = f"HTTP {resp.status}" + (" (rate limited — slow down)" if resp.status == 429 else "")
         except Exception as e:
             msg = str(e).splitlines()[0]
-            st = [l for l in tab.network if l.startswith(("4", "5")) and " document " in l]
+            st = [e for e in tab.reqs if e.rtype == "document" and (e.status or 0) >= 400]
             if st:
-                code = st[-1].split()[0]
+                code = str(st[-1].status)
                 raise UsageError(f"HTTP {code} from {url}" + (" (rate limited by the site — wait a few minutes)" if code == "429" else ""))
             if "interrupted by another navigation" not in msg:
                 raise UsageError(f"navigation failed: {msg[:300]}")
@@ -895,17 +889,6 @@ class Daemon:
         if o.clear:
             tab.console.clear()
         return "\n".join(items[-o.n:]) or "[no console messages]"
-
-    async def c_network(self, o, profile):
-        tab = await self.tab_for(profile, o.tab, create=False)
-        items = list(tab.network)
-        if o.failed:
-            items = [i for i in items if i.startswith("FAIL") or i[:1] in "45"]
-        if o.filter:
-            items = [i for i in items if o.filter.lower() in i.lower()]
-        if o.clear:
-            tab.network.clear()
-        return "\n".join(items[-o.n:]) or "[no requests]"
 
     async def c_fetch(self, o, profile):
         tab = await self.tab_for(profile, o.tab)

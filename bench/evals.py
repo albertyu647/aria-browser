@@ -3,14 +3,18 @@
 Feature-parity evals vs Claude in Chrome's tool surface (navigate, read_page, find, get_page_text,
 computer click/type/key/scroll/hover/screenshot, form_input, file_upload, javascript_tool,
 read_console_messages, read_network_requests, tabs_*), plus aria-only extras
-(two profiles at once, batch, diff, fetch-as-user).
+(two profiles at once, batch, diff, fetch-as-user) and DevTools-panel parity
+(request headers/payload/body, HAR, WebSockets, breakpoints/logpoints, perf, storage).
 
 Uses a local data: URL fixture for forms so it never hammers real sites.
     python3 bench/evals.py
 """
 
+import http.server
+import json
 import shlex
 import subprocess
+import threading
 import sys
 import tempfile
 import time
@@ -34,6 +38,45 @@ FIXTURE = """<!doctype html><title>Aria Fixture</title>
 <iframe srcdoc="<button onclick=&quot;this.textContent='iframe ok'&quot;>Frame button</button>"></iframe>
 </main>"""
 FIX_URL = "data:text/html," + urllib.parse.quote(FIXTURE)
+
+
+DT_JS = """function compute(items, factor) {
+  const total = items.reduce((a, b) => a + b, 0) * factor;
+  document.getElementById('out').textContent = 'total-' + total;
+  return total;
+}
+function boom() { null.x; }
+"""
+DT_HTML = """<!doctype html><title>DT Fixture</title><script src="/app.js"></script>
+<main><p id=out>-</p><button onclick="compute([1,2,3], 7)">Compute</button>
+<button onclick="fetch('/api/items?q=x',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({hello:'world'})})">Post</button>
+<button onclick="setTimeout(boom)">Boom</button>
+<button onclick="const w=new WebSocket('wss://echo.websocket.org');w.onopen=()=>w.send('ping-aria')">WS</button></main>
+<script>localStorage.setItem('user','{"id":7}');
+const r=indexedDB.open('appdb',1);r.onupgradeneeded=()=>r.result.createObjectStore('notes',{keyPath:'id'});
+r.onsuccess=()=>r.result.transaction('notes','readwrite').objectStore('notes').put({id:1,text:'first note'});</script>"""
+
+
+class DTHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, ctype, body):
+        self.send_response(200)
+        self.send_header("content-type", ctype)
+        self.send_header("x-fixture", "1")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/app.js"):
+            return self._send("application/javascript", DT_JS.encode())
+        self._send("text/html", DT_HTML.encode())
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length") or 0))
+        self._send("application/json", json.dumps({"items": ["a", "b", "c"]}).encode())
 
 
 def aria(*args, profile=None):
@@ -128,9 +171,67 @@ def main():
     out, _, _ = aria("open", "https://x.com/home", "--no-snap")
     check("signed-in X (login wall auto-resync)", "Log in" not in out and "/home" in out, out.strip()[:90])
 
+    devtools_evals(tmp)
+
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     print(f"\n{passed}/{len(RESULTS)} evals passed")
     sys.exit(0 if passed == len(RESULTS) else 1)
+
+
+def devtools_evals(tmp):
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DTHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}/"
+    aria("open", base, "--new", "--no-snap")
+
+    aria("click", "Post")
+    time.sleep(0.3)
+    out, _, _ = aria("network", "--method", "POST")
+    rid = out.strip().splitlines()[-1].split()[0] if out.startswith("#") else "#0"
+    out, _, _ = aria("req", rid)
+    check("req: headers + payload + body", "content-type: application/json" in out and '"hello": "world"' in out
+          and "x-fixture: 1" in out and '"items"' in out, rid)
+    out, _, _ = aria("req", rid, "--curl")
+    check("req --curl", out.startswith("curl ") and "--data-raw" in out)
+    har = tmp / "t.har"
+    aria("har", str(har))
+    ok = har.exists() and any(e["request"].get("postData") for e in json.loads(har.read_text())["log"]["entries"])
+    check("har export", ok)
+
+    aria("click", "WS")
+    aria("wait", "2")
+    out, _, _ = aria("ws")
+    check("websocket frames", "↑" in out and "ping-aria" in out, out.strip().splitlines()[0][:80])
+
+    out, _, _ = aria("debug", "break", "app.js:2", "--log", "items, factor")
+    aria("debug", "break", "app.js:3", "--cond", "factor > 5")
+    aria("click", "Compute")
+    out, _, _ = aria("debug", "hits")
+    check("logpoint + breakpoint locals", "[logpoint b1] [1,2,3] 7" in out and "total = 42" in out, out.count("\n"))
+    aria("debug", "exceptions", "uncaught")
+    aria("click", "Boom")
+    aria("wait", "0.3")
+    out, _, _ = aria("debug", "hits", "-n", "1")
+    check("pause on exception (auto-resumed)", "TypeError" in out and "boom @" in out)
+    aria("debug", "clear")
+    out, _, _ = aria("eval", "1+1")
+    check("page not left paused", out.strip() == "2")
+    out, _, _ = aria("debug", "source", "app.js", "--line", "2", "--context", "0")
+    check("debug source", "reduce" in out)
+
+    out, _, _ = aria("perf")
+    check("perf metrics", "TTFB" in out and "FCP" in out and "JS heap" in out)
+    aria("perf", "start")
+    aria("reload")
+    trace = tmp / "trace.json"
+    out, _, _ = aria("perf", "stop", str(trace))
+    check("perf trace", trace.exists() and "Main thread" in out, out.strip().splitlines()[-1][:80])
+
+    out, _, _ = aria("storage", "local", "get", "user")
+    out2, _, _ = aria("storage", "idb", "appdb", "notes")
+    out3, _, _ = aria("storage")
+    check("storage local / idb / overview", '"id": 7' in out and "first note" in out2 and "IndexedDB      appdb" in out3)
+    srv.shutdown()
 
 
 if __name__ == "__main__":

@@ -36,7 +36,8 @@ Aria Browser is an [agent skill](https://github.com/vercel-labs/skills): a small
 - **Never takes focus.** Real Google Chrome runs headless: no window, no Dock icon, and it doesn't touch your open Chrome.
 - **Compact snapshots with refs.** Built on Playwright's AI-mode accessibility snapshot, then flattened: wrappers dissolved, inline text joined, URLs dropped unless asked for. Hacker News's front page is about 1.5k tokens with every story's points and ref.
 - **Fast after the first call.** A background daemon keeps Chrome, tabs and refs alive. Clicks and finds come back in under a second, and a page open is about as long as the site takes to load.
-- **The full action set.** Click, type, press, hover, select, check, upload, scroll, back/forward, wait-for, screenshots, PDF, `eval`, console and network logs, `fetch` as the signed-in user, and tabs. `batch` runs several commands in one call.
+- **The full action set.** Click, type, press, hover, select, check, upload, scroll, back/forward, wait-for, screenshots, PDF, `eval`, console logs, `fetch` as the signed-in user, and tabs. `batch` runs several commands in one call.
+- **DevTools panels without a window.** Network (request/response headers, payloads, bodies, timing, curl, HAR export), WebSocket frames, Sources (logpoints, and breakpoints and pause-on-exceptions that capture stack and locals and then auto-resume), Performance (Web Vitals, runtime counters, Chrome traces) and Application (local/session storage, cookies, IndexedDB, Cache Storage, service workers).
 - **Cheap follow-ups.** `--diff` returns only the lines that changed since the last snapshot, and `--filter`, `--ref` and `--max` narrow any read.
 - **Recovers sign-ins.** If a page shows a login wall, it re-reads cookies from Chrome once and reloads. HTTP 4xx/5xx, including rate limits, appear in the result header.
 
@@ -89,7 +90,12 @@ Running `node bin/cli.js` again re-syncs after you sign in to something new in C
 | Act | `click`, `type [--submit]`, `press <Key>`, `hover`, `select`, `check [--off]`, `upload` |
 | Move | `scroll down\|up\|top\|bottom\|<ref>`, `back`, `forward`, `reload`, `wait [--for text] [--url part]` |
 | Capture | `shot [path] [--full] [--ref eN]`, `pdf <path>` |
-| Debug | `eval "<js>"`, `console [--errors]`, `network [--failed]`, `fetch <url>` |
+| Debug | `eval "<js>"`, `console [--errors]`, `fetch <url>` |
+| Network | `network [--type api] [--failed] [--slow ms]`, `req <id> [--curl\|--save f]`, `har <path>` |
+| WebSockets | `ws` |
+| Sources | `debug break <url>:<line> [--log expr] [--cond expr]`, `debug exceptions`, `debug hits`, `debug source` |
+| Performance | `perf`, `perf start` / `perf stop [path]` |
+| Application | `storage [local\|session\|cookies\|idb\|cache\|sw]` |
 | Tabs | `tabs`, `tab new [url]`, `tab use t2`, `tab close` |
 | Several at once | `batch 'open x.com/home --no-snap' 'find search' 'type e12 "hello"'` |
 | Sign-ins | `resync`, `cookies-check` (which sites have a session cookie, names only) |
@@ -115,7 +121,7 @@ Same tasks, same Mac, against Claude in Chrome driving the real browser (October
 First call of a session: about 2.4 s while Chrome starts. LinkedIn is a tie, mostly server time.
 
 ```sh
-python3 bench/evals.py     # 20 feature checks: forms, iframes, tabs, console, two profiles, signed-in X
+python3 bench/evals.py     # 31 feature checks: forms, iframes, tabs, console, two profiles, signed-in X, DevTools panels
 python3 bench/bench.py     # timings and tokens vs bench/chrome_baseline.json
 ```
 
@@ -128,6 +134,7 @@ SKILL.md              what agents read: commands, token tips, sign-in notes
 bin/cli.js            Node client; starts the daemon on demand (bin/aria is a shell shim)
 scripts/ariad.py      the daemon: Chrome, contexts, tabs, commands
 scripts/compact.py    AI snapshot YAML -> compact lines with refs
+scripts/devtools.py   Network/WebSocket/Sources/Performance/Application commands (CDP)
 scripts/sync_auth.py  Chrome cookie DB -> Playwright storage state, per profile
 scripts/profiles.py   profile aliases in ~/.config/chrome-storage-states/profiles.json
 scripts/browse.py     the original one-shot browser (kept for reference)
