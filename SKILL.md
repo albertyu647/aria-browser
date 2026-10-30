@@ -63,6 +63,7 @@ Refs (`e17`) are valid until the next snapshot of that tab. If a ref is stale, r
 | Application panel | `storage`, `storage local\|session [get\|set\|del\|clear]`, `storage cookies [set\|del]`, `storage idb [db] [store]`, `storage cache [name]`, `storage sw [unregister]` |
 | Tabs | `tabs`, `tab new [url]`, `tab use t2`, `tab close [t2]` |
 | Many steps, one call | `batch 'open x.com/home --no-snap' 'find search' 'type e12 "hi"'` |
+| Sign in | `login [url] [--user who] [--no-submit] [--list]` (autofill the user's own saved Chrome password), `oauth <google\|github\|…> [url] [--account email]` (click "Continue with <provider>") |
 | Auth | `resync` (re-read Chrome cookies live), `cookies-check` (which sites are signed in) |
 | Daemon | `status`, `stop` (it also exits after 30 min idle, `ARIA_IDLE`) |
 
@@ -92,6 +93,26 @@ The daemon reads the same data DevTools shows, through Playwright + CDP, per tab
   24k chars by default, with an `--offset` hint.
 - After an action, `--diff` returns only the lines that changed.
 - Never dump raw HTML. `snap --yaml` and `snap --raw` exist for debugging only.
+
+## Signing in (saved passwords & OAuth)
+Most sites need no sign-in step — the synced cookies already carry a live session. When a site *does* show a
+login form, there are two paths, cheapest first:
+
+- **`oauth google` (or github/apple/microsoft/facebook)** — clicks the "Continue with <provider>" button and
+  follows the popup. If the provider session is already in the profile's cookies it completes with no password
+  typed at all. This is the preferred path; prefer it whenever an SSO button exists. `--account <email>` picks
+  an account in the chooser; pass `--url` to open the page first.
+- **`login`** — fills the user's **own** saved Chrome password for the current page (`scripts/passwords.py`,
+  same Keychain key as the cookie sync). `login --list` shows which accounts are saved (no secrets). It handles
+  one-step and two-step (username-then-password) forms and submits by default (`--no-submit` to stop before
+  submitting). `--user <name>` disambiguates when several accounts are saved for the site.
+
+Safeguards on `login`: passwords are decrypted on demand, never written to disk, and redacted (`•••`) from all
+output. A login is only filled when the saved credential's registrable domain matches the **live** page URL, so a
+look-alike origin can't capture a saved password. Federated (Sign-in-with-Google) entries are never typed as
+passwords — `login` points you to `oauth` instead. Account **creation** is not automated: email/SMS verification,
+CAPTCHA and ToS acceptance are left for the user or driven explicitly with `type`/`click`; OAuth-based signup works
+through `oauth` like any SSO login.
 
 ## Auth notes
 - Cookies come from Chrome's encrypted DB (`scripts/sync_auth.py`, macOS Keychain). Chrome keeps at most ~3,300

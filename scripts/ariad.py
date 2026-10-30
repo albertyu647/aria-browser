@@ -32,6 +32,7 @@ from playwright.async_api import async_playwright
 sys.path.insert(0, str(Path(__file__).parent))
 from compact import compact, dominant_prefix  # noqa: E402
 import profiles as profiles_cfg  # noqa: E402
+import passwords as passwords_mod  # noqa: E402  saved-password autofill (login command)
 from devtools import DevtoolsMixin, PERF_INIT_JS  # noqa: E402
 
 STATE_DIR = Path(os.environ.get("ARIA_HOME", Path.home() / ".cache" / "aria-browser"))
@@ -557,6 +558,19 @@ class Daemon(DevtoolsMixin):
         p.add_argument("action", choices=["new", "use", "close"])
         p.add_argument("arg", nargs="?")
 
+        p = mk("login", "Sign in using the user's own saved Chrome password (origin-checked, redacted)")
+        p.add_argument("url", nargs="?", help="page to sign in on (default: current tab)")
+        p.add_argument("--user", help="pick this account when several are saved for the site")
+        p.add_argument("--no-submit", dest="submit", action="store_false", help="fill fields but don't submit")
+        p.add_argument("--list", action="store_true", help="just list saved accounts for the site (no secrets)")
+        reads(p)
+
+        p = mk("oauth", "Click a 'Continue with <provider>' SSO button and follow the popup")
+        p.add_argument("provider", help="google | github | apple | microsoft | facebook | <text on the button>")
+        p.add_argument("url", nargs="?", help="page with the SSO button (default: current tab)")
+        p.add_argument("--account", help="email/name to pick in the provider's account chooser, if shown")
+        reads(p)
+
         mk("resync", "Re-read cookies from Chrome into this profile's live context")
         mk("status", "Daemon status")
         mk("stop", "Shut the daemon down")
@@ -928,6 +942,163 @@ class Daemon(DevtoolsMixin):
             raise UsageError(f"no tab {o.arg}")
         await t.page.close()
         return f"closed {t.id}"
+
+    async def _goto_or_current(self, o, profile):
+        if getattr(o, "url", None):
+            url = o.url if re.match(r"^[a-z][a-z0-9+.-]*:", o.url) else "https://" + o.url
+            tab = await self.tab_for(profile, o.tab)
+            await tab.page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await self.settle(tab.page, max_ms=3500)
+            return tab
+        return await self.tab_for(profile, o.tab, create=False)
+
+    async def _first_visible(self, page, selector):
+        loc = page.locator(selector)
+        try:
+            n = await loc.count()
+        except Exception:
+            return None
+        for i in range(min(n, 12)):
+            el = loc.nth(i)
+            try:
+                if await el.is_visible():
+                    return el
+            except Exception:
+                pass
+        return None
+
+    async def c_login(self, o, profile):
+        """Autofill one of the user's OWN saved Chrome passwords, origin-checked and redacted."""
+        tab = await self._goto_or_current(o, profile)
+        page = tab.page
+        live = page.url
+        reg = passwords_mod.registrable(passwords_mod._host_of(live))
+        try:
+            creds = passwords_mod.credentials_for(live, profile)
+        except Exception as e:
+            raise UsageError(f"couldn't read saved logins: {str(e).splitlines()[0][:200]}")
+        pw_creds = [c for c in creds if c["password"]]
+        fed = [c for c in creds if c["federated"]]
+
+        if o.list:
+            lines = [f"• {c['username'] or '(no username)'}  [password]" for c in pw_creds]
+            lines += [f"• {c['username'] or '(no username)'}  [federated — use `oauth`]" for c in fed]
+            return f"saved accounts for {reg} ({profile}):\n" + ("\n".join(lines) or "  none")
+
+        if not pw_creds:
+            hint = "  (saved as a federated login — try `oauth google`)" if fed else ""
+            raise UsageError(f"no saved password for {reg} in profile {profile!r}{hint}")
+
+        if o.user:
+            match = [c for c in pw_creds if c["username"].lower() == o.user.lower()] or \
+                    [c for c in pw_creds if o.user.lower() in c["username"].lower()]
+            if not match:
+                raise UsageError(f"no saved account matching {o.user!r}; have: " +
+                                 ", ".join(c["username"] for c in pw_creds))
+            cred = match[0]
+        elif len(pw_creds) > 1:
+            raise UsageError(f"{len(pw_creds)} saved accounts for {reg}; pick one with --user: " +
+                             ", ".join(c["username"] for c in pw_creds))
+        else:
+            cred = pw_creds[0]
+
+        # origin guard: never type a saved password on an origin it wasn't saved for
+        if passwords_mod.registrable(passwords_mod._host_of(cred["origin"])) != reg:
+            raise UsageError(f"origin mismatch (saved for {cred['origin']}, page is {live}) — refusing to fill")
+
+        user, pwv = cred["username"], cred["password"]
+        secrets = [pwv]
+        before = live
+        n_pages = len(self.contexts[tab.profile].pages)
+        USER_SEL = ("input[type=email], input[autocomplete='username'], input[name*='user' i], "
+                    "input[id*='user' i], input[name*='email' i], input[id*='email' i], "
+                    "input[type=text]:not([readonly])")
+
+        pw_el = await self._first_visible(page, "input[type=password]")
+        if pw_el is None:
+            # two-step form: username first, password appears after advancing
+            u_el = await self._first_visible(page, USER_SEL)
+            if u_el is None:
+                raise UsageError("no password or username field on this page; drive it manually with type/click")
+            if user:
+                await u_el.fill(user, timeout=8000)
+            try:
+                await u_el.press("Enter")
+            except Exception:
+                pass
+            try:
+                await page.locator("input[type=password]").first.wait_for(state="visible", timeout=6000)
+            except Exception:
+                pass
+            await self.settle(page, max_ms=3000)
+            pw_el = await self._first_visible(page, "input[type=password]")
+            if pw_el is None:
+                raise UsageError("entered username but no password field appeared; the page may need a 'Next' click — use click/type")
+        else:
+            u_el = await self._first_visible(page, USER_SEL)
+            if u_el is not None and user:
+                try:
+                    cur = await u_el.input_value()
+                except Exception:
+                    cur = ""
+                if not cur:
+                    try:
+                        await u_el.fill(user, timeout=8000)
+                    except Exception:
+                        pass
+
+        await pw_el.fill(pwv, timeout=8000)
+        note = f"filled login for {user or '(saved account)'}"
+        if o.submit:
+            await pw_el.press("Enter")
+            note += " and submitted"
+        out = await self._after_action(tab, o, before, n_pages)
+        return passwords_mod.redact(f"{note}\n{out}", secrets)
+
+    async def c_oauth(self, o, profile):
+        """Click a 'Continue with <provider>' button and follow the popup/redirect."""
+        tab = await self._goto_or_current(o, profile)
+        page = tab.page
+        prov = o.provider.strip()
+        known = {
+            "google": ["Continue with Google", "Sign in with Google", "Sign up with Google", "Log in with Google", "Google"],
+            "github": ["Continue with GitHub", "Sign in with GitHub", "Sign up with GitHub", "GitHub"],
+            "apple": ["Continue with Apple", "Sign in with Apple", "Apple"],
+            "microsoft": ["Continue with Microsoft", "Sign in with Microsoft", "Microsoft"],
+            "facebook": ["Continue with Facebook", "Sign in with Facebook", "Facebook"],
+        }
+        names = known.get(prov.lower(), [prov])
+        before = page.url
+        n_pages = len(self.contexts[tab.profile].pages)
+        clicked = False
+        for name in names:
+            for role in ("button", "link"):
+                loc = page.get_by_role(role, name=name)
+                try:
+                    if await loc.count() and await loc.first.is_visible():
+                        await loc.first.click(timeout=8000)
+                        clicked = True
+                        break
+                except Exception:
+                    pass
+            if clicked:
+                break
+        if not clicked:
+            raise UsageError(f"no '{names[0]}' button found; use `find {prov}` then `click <ref>`")
+        out = await self._after_action(tab, o, before, n_pages)
+        if o.account:
+            target = self.tabs.get(self.current.get(profile))
+            if target:
+                try:
+                    acc = target.page.get_by_text(o.account)
+                    if await acc.count():
+                        b2 = target.page.url
+                        n2 = len(self.contexts[target.profile].pages)
+                        await acc.first.click(timeout=8000)
+                        out = await self._after_action(target, o, b2, n2)
+                except Exception:
+                    pass
+        return out
 
     async def c_resync(self, o, profile):
         await self.ensure_context(profile)

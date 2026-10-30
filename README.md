@@ -40,6 +40,7 @@ Aria Browser is an [agent skill](https://github.com/vercel-labs/skills): a small
 - **DevTools panels without a window.** Network (request/response headers, payloads, bodies, timing, curl, HAR export), WebSocket frames, Sources (logpoints, and breakpoints and pause-on-exceptions that capture stack and locals and then auto-resume), Performance (Web Vitals, runtime counters, Chrome traces) and Application (local/session storage, cookies, IndexedDB, Cache Storage, service workers).
 - **Cheap follow-ups.** `--diff` returns only the lines that changed since the last snapshot, and `--filter`, `--ref` and `--max` narrow any read.
 - **Recovers sign-ins.** If a page shows a login wall, it re-reads cookies from Chrome once and reloads. HTTP 4xx/5xx, including rate limits, appear in the result header.
+- **Signs in when cookies aren't enough.** `oauth google` (or github/apple/…) clicks the "Continue with \<provider>" button and rides your existing provider session — no password typed. `login` autofills your own Chrome-saved password for the page, but only when the saved credential's registrable domain matches the live URL, and the password is decrypted on demand, kept in memory and redacted (`•••`) from all output. Reads the local user's own saved Chrome credentials; it never sends them anywhere.
 
 ## Architecture
 
@@ -98,6 +99,7 @@ Running `node bin/cli.js` again re-syncs after you sign in to something new in C
 | Application | `storage [local\|session\|cookies\|idb\|cache\|sw]` |
 | Tabs | `tabs`, `tab new [url]`, `tab use t2`, `tab close` |
 | Several at once | `batch 'open x.com/home --no-snap' 'find search' 'type e12 "hello"'` |
+| Sign in | `login [url] [--user who] [--no-submit] [--list]` (autofill your saved password, origin-checked and redacted), `oauth <google\|github\|…> [url] [--account email]` (click "Continue with \<provider>") |
 | Sign-ins | `resync`, `cookies-check` (which sites have a session cookie, names only) |
 
 Any action takes `--snap`, `--text` or `--diff` to read the page in the same call. [SKILL.md](SKILL.md) is the version agents read.
@@ -149,6 +151,7 @@ Python (Playwright, cryptography), Node (client), Google Chrome via Playwright's
 
 - Use it with your own accounts, and stay within each site's terms and rate limits. It sends real requests as you.
 - The cookie copies in `~/.config/chrome-storage-states/` are as sensitive as your passwords. They stay on your machine; keep them out of repos and backups you share.
+- `login` reads your saved passwords straight from Chrome's `Login Data` (same Keychain key as the cookie sync). They are only ever decrypted on your machine, in memory, to fill a field on a matching origin — never written to disk and never sent anywhere. Account creation is not automated: CAPTCHA, email/SMS verification and ToS acceptance are left to you or driven explicitly.
 - The cookie sync is macOS-only for now. The daemon and client are plain Playwright and Node, but untested on Windows and Linux.
 - Not affiliated with Google, Anthropic, OpenAI, Microsoft (Playwright), X, Reddit or LinkedIn.
 - MIT license.
