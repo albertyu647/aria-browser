@@ -81,7 +81,11 @@ async ([quietMs, maxMs]) => {
     if (busy) { stableSince = performance.now(); await new Promise(r => setTimeout(r, 100)); continue; }
     // tolerate tiny churn (live counters, relative timestamps) so busy feeds still count as settled
     if (Math.abs(sig - last) > Math.max(40, 0.02 * last)) { last = sig; stableSince = performance.now(); }
-    else if (sig > 200 && performance.now() - stableSince >= quietMs) return Math.round(performance.now() - t0);
+    else {
+      // small pages (forms, dialogs) count once loaded, with a longer quiet so an SPA shell isn't mistaken for content
+      const need = sig > 200 ? quietMs : (sig > 0 && document.readyState === 'complete') ? 2 * quietMs : Infinity;
+      if (performance.now() - stableSince >= need) return Math.round(performance.now() - t0);
+    }
     await new Promise(r => setTimeout(r, 100));
   }
   return -1;
