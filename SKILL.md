@@ -121,6 +121,20 @@ through `oauth` like any SSO login.
   the user needs to sign in to that site in real Chrome. Then run `aria resync`.
 - Reddit rate-limits (HTTP 429) after a few dozen rapid loads, and the header reports the status. Slow down.
 
+## Site recipes (research)
+- `--no-snap` belongs to `open` only. `click` rejects it, and the click is silently skipped. Use `click eN`, `--snap|--text|--diff`.
+- **X search:** `open "x.com/search?q=<words> min_faves:300&f=top"` (`from:user` narrows to one author). No bot wall when signed in.
+  Long posts are cut off at **Show more**: `find "Show more"`, then `click eN`. It expands inline (the URL doesn't change),
+  but `text` may still print the cut-off copy, so read the expanded post with
+  `eval "document.querySelector('article [data-testid=tweetText]').innerText"` (likes: `[data-testid=like]` aria-label).
+  Threads continue in replies; a checklist that stops at its heading is usually in an attached image.
+  The same author often reposts a post with edits, so a search can surface a different version with different likes.
+- **Reddit search:** `reddit.com/search.json` returns 403, so use the HTML search. Searching all of Reddit with `sort=top`
+  returns unrelated viral posts; search within a subreddit instead:
+  `open "reddit.com/r/SEO/search/?q=<words>&sort=top&t=all&restrict_sr=1" --text` (vote counts show as `N votes·`),
+  and `--urls` to get the thread links. Read threads on `old.reddit.com<permalink> --text`: the post comes first,
+  then comments, and about 9k chars covers the post plus the top comments.
+
 ## Benchmarks & evals
 ```bash
 python3 bench/evals.py      # 31 feature-parity checks (forms, iframes, tabs, console, both profiles, DevTools panels…)
